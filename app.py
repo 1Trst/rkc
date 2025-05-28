@@ -362,8 +362,9 @@ with tab3:
         "Choose output language / Choisir la langue de sortie:",
         options=list(LANGUAGES.keys()),
         index=0,  # Default to French
-        help="This will affect the language of article summaries and newsletter content"
-    )
+        help="This will affect the language of article summaries and newsletter content",
+        key="language_selector"  # Add unique key
+)
     
     # Store in session state
     st.session_state.output_language = LANGUAGES[selected_language]
@@ -382,7 +383,8 @@ with tab3:
             max_value=10,
             value=3,
             step=1,
-            help="Number of sentences for each article summary in the newsletter"
+            help="Number of sentences for each article summary in the newsletter",
+             key="article_summary_length"
         )
         st.session_state.article_summary_sentences = article_summary_sentences
     
@@ -393,7 +395,8 @@ with tab3:
             max_value=15,
             value=7,
             step=1,
-            help="Number of sentences for the executive summary"
+            help="Number of sentences for the executive summary",
+            key="exec_summary_length" 
         )
         st.session_state.exec_summary_sentences = exec_summary_sentences
     

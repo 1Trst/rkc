@@ -58,22 +58,21 @@ tab1, tab2, tab3 = st.tabs(["🧹 Article Cleaning", "📰 Newsletter Generator"
 
 # Initialize Azure OpenAI client
 def get_client(key):
-    """Get Azure OpenAI client - alternative initialization"""
+    """Get Azure OpenAI client properly"""
     if not key:
         return None
     try:
-        import openai
-        # Direct client creation
-        client = openai.AzureOpenAI(
+        from openai import AzureOpenAI
+        
+        client = AzureOpenAI(
             api_key=key,
-            api_version="2024-02-01", 
+            api_version="2024-02-15-preview",
             azure_endpoint=AZURE_OPENAI_ENDPOINT,
-            max_retries=2,
-            timeout=30.0
         )
         return client
     except Exception as e:
         st.error(f"Error initializing Azure OpenAI client: {str(e)}")
+        return Noneinitializing Azure OpenAI client: {str(e)}")
         return None
 
 # Ensure Templates directory exists

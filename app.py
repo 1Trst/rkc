@@ -14,11 +14,12 @@ from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from openai import AzureOpenAI
 import asyncio
+import httpx
 import json
 from concurrent.futures import ThreadPoolExecutor
 
 # Azure settings - Get from environment variables
-api_key = os.getenv("AZURE_OPENAI_API_KEY")
+key = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "https://rkcazureai.cognitiveservices.azure.com/")
 
 #Edit
@@ -34,7 +35,7 @@ st.title("📝 Article Cleaner & Newsletter Generator")
 
 # Show API key status in sidebar
 with st.sidebar:
-    if api_key:
+    if key:
         st.success("✅ Azure OpenAI API Key loaded")
         st.info(f"🔗 Endpoint: {AZURE_OPENAI_ENDPOINT}")
     else:
@@ -42,7 +43,7 @@ with st.sidebar:
         st.warning("Please set AZURE_OPENAI_API_KEY environment variable")
 
 # Stop execution if no API key
-if not api_key:
+if not key:
     st.error("🔑 **Configuration Error**: Azure OpenAI API Key not found in environment variables.")
     st.markdown("""
     **For local development:**
@@ -65,10 +66,8 @@ def get_client(key):
     try:
         from openai import AzureOpenAI
         
-        # Option 1: Set environment variable and let the client use it
-        os.environ["AZURE_OPENAI_API_KEY"] = key
-        
         client = AzureOpenAI(
+            api_key=key,
             api_version="2024-02-15-preview",
             azure_endpoint=AZURE_OPENAI_ENDPOINT,
         )

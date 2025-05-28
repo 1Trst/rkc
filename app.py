@@ -57,17 +57,21 @@ if not api_key:
 tab1, tab2, tab3 = st.tabs(["🧹 Article Cleaning", "📰 Newsletter Generator", "⚙️ Settings"])
 
 # Initialize Azure OpenAI client
-@st.cache_resource(show_spinner=False)
-@st.cache_resource(show_spinner=False)
 def get_client(key):
+    """Get Azure OpenAI client - alternative initialization"""
     if not key:
         return None
     try:
-        return AzureOpenAI(
+        import openai
+        # Direct client creation
+        client = openai.AzureOpenAI(
             api_key=key,
-            api_version="2024-02-01",
-            azure_endpoint=AZURE_OPENAI_ENDPOINT
+            api_version="2024-02-01", 
+            azure_endpoint=AZURE_OPENAI_ENDPOINT,
+            max_retries=2,
+            timeout=30.0
         )
+        return client
     except Exception as e:
         st.error(f"Error initializing Azure OpenAI client: {str(e)}")
         return None

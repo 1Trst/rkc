@@ -575,7 +575,9 @@ with tab2:
     )
     
     articles_for_newsletter = []
-    
+    newsletter_articles_to_process = []
+    newsletter_article_names = []
+        
     if newsletter_source == "Use cleaned articles from Article Cleaning tab":
         if 'cleaned_articles_tab1' in st.session_state:
             articles_for_newsletter = st.session_state.cleaned_articles_tab1
@@ -599,8 +601,6 @@ with tab2:
             key="newsletter_input"
         )
         
-        newsletter_articles_to_process = []
-        newsletter_article_names = []
         
         if newsletter_input_method == "Upload Files":
             newsletter_uploaded_files = st.file_uploader(

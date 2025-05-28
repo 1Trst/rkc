@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 api_key = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "https://rkcazureai.cognitiveservices.azure.com/")
 
+#Edit
 # Language selection
 LANGUAGES = {
     "Français": "French",

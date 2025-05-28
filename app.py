@@ -58,14 +58,19 @@ tab1, tab2, tab3 = st.tabs(["🧹 Article Cleaning", "📰 Newsletter Generator"
 
 # Initialize Azure OpenAI client
 @st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def get_client(key):
     if not key:
         return None
-    return AzureOpenAI(
-        api_key=key,
-        api_version="2024-02-01",
-        azure_endpoint=AZURE_OPENAI_ENDPOINT
-    )
+    try:
+        return AzureOpenAI(
+            api_key=key,
+            api_version="2024-02-01",
+            azure_endpoint=AZURE_OPENAI_ENDPOINT
+        )
+    except Exception as e:
+        st.error(f"Error initializing Azure OpenAI client: {str(e)}")
+        return None
 
 # Ensure Templates directory exists
 def ensure_templates_dir():

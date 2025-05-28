@@ -65,8 +65,10 @@ def get_client(key):
     try:
         from openai import AzureOpenAI
         
+        # Option 1: Set environment variable and let the client use it
+        os.environ["AZURE_OPENAI_API_KEY"] = key
+        
         client = AzureOpenAI(
-            api_key=key,
             api_version="2024-02-15-preview",
             azure_endpoint=AZURE_OPENAI_ENDPOINT,
         )

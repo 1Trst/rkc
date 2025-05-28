@@ -29,7 +29,41 @@ LANGUAGES = {
     "English": "English", 
     "Deutsch": "German"
 }
+def check_password():
+    """Returns True if the user has entered the correct password."""
+    
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == "rkcnewsletterWS2025":
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Don't store the password
+        else:
+            st.session_state["password_correct"] = False
 
+    # Return True if password is validated
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # Show input for password
+    st.markdown("### 🔐 Authentication Required")
+    st.text_input(
+        "Please enter the password to access the application:",
+        type="password",
+        on_change=password_entered,
+        key="password",
+        placeholder="Enter password..."
+    )
+    
+    if "password_correct" in st.session_state:
+        st.error("😞 Password incorrect. Please try again.")
+    
+    st.markdown("---")
+    st.info("💡 Contact your administrator if you need access.")
+    return False
+
+# Check password before showing the main app
+if not check_password():
+    st.stop()
 # UI
 st.title("📝 Article Cleaner & Newsletter Generator")
 

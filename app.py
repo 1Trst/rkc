@@ -472,7 +472,7 @@ with tab1:
     
     # Clean articles button
     if st.button("🧹 Clean Articles", use_container_width=True):
-        client = get_client(api_key)
+        client = get_client(key)
         
         if not client:
             st.error("Failed to initialize Azure OpenAI client")

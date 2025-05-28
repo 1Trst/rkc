@@ -72,7 +72,6 @@ def get_client(key):
         return client
     except Exception as e:
         st.error(f"Error initializing Azure OpenAI client: {str(e)}")
-        return Noneinitializing Azure OpenAI client: {str(e)}")
         return None
 
 # Ensure Templates directory exists

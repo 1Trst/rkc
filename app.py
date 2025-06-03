@@ -182,7 +182,7 @@ async def process_article_async(client, text, language="French", article_summary
     # Extract metadata and clean in one call
     combined_prompt = f"""You will be provided a poorly copy/pasted article from a single journal/website. Please extract the following information and clean this article in JSON format:
 
-1. Extract and clean the title (remove problematic characters like &,/,<,>,#,»,«), then translate it to {output_language}
+1. Extract and clean the title (remove problematic characters like &,/,<,>,#,»,«), then translate it to {output_language}.
 2. Extract the source of the article (journal or website name) it has to be in the following list : ["Consultor","Financial Times","Handelsblatt","La Lettre_du_Conseil","La Lettre","Les Echos Investir","Les Echos","Le Monde"]. Pay close attention to this part, and detect the difference between "Les Echos" et "Les Echos Investir"
 3. Extract the date (format: d MMMM yyyy)
 4. Clean the article by removing any website boilerplate, ads, or irrelevant content. Please try to respect and understand the different paragraphs of the original article and reproduce those in your cleaned text. Then translate the entire cleaned article text to {output_language}.
@@ -276,12 +276,12 @@ def create_word_doc(article_data, output_path):
     
     # Set document properties
     core_props = doc.core_properties
-    core_props.title = article_data.get("title", "Untitled")
+    core_props.title = article_data.get("source", "Unknown") +'_'+ article_data.get("title", "Untitled")+'_'+article_data.get("date","No date")
     core_props.author = article_data.get("source", "Unknown")
     
     # Add title
     title = doc.add_paragraph()
-    title.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     title_run = title.add_run(f"{article_data.get('title', 'Untitled')} — {article_data.get('source', 'Unknown')}, {article_data.get('date', 'No date')}")
     title_run.bold = True
     title_run.font.size = Pt(16)
@@ -289,7 +289,7 @@ def create_word_doc(article_data, output_path):
     
     # Add article body
     body = doc.add_paragraph(article_data.get("cleaned_text", "No content available"))
-    body.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    body.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     
     # Save document
     doc.save(output_path)

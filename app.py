@@ -277,7 +277,10 @@ def create_word_doc(article_data, output_path):
     # Set document properties
     core_props = doc.core_properties
     title_run = title.add_run(f"{article_data.get('title', 'Untitled')} — {article_data.get('source', 'Unknown')}, {article_data.get('date', 'No date')}")
-    core_props.title = f"{article_data.get('source', 'Unknown')}_{article_data.get('title', 'Untitled')}_{article_data.get('date', 'No date')}"
+    core_props.title = "{}_{}_{}" .format(
+    article_data.get("source", "Unknown"),
+    article_data.get("title", "Untitled"),
+    article_data.get("date", "No date"))
     core_props.author = article_data.get("source", "Unknown")
     
     # Add title

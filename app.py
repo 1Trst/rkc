@@ -184,7 +184,7 @@ async def process_article_async(client, text, language="French", article_summary
 
 1. Extract and clean the title (remove problematic characters like &,/,<,>,#,»,«,é,è,ê,â,à), then translate it to {output_language}.
 2. Extract the source of the article (journal or website name) it has to be in the following list : ["Consultor","Financial Times","Handelsblatt","La Lettre_du_Conseil","La Lettre","Les Echos Investir","Les Echos","Le Monde"]. Pay close attention to this part, and detect the difference between "Les Echos" et "Les Echos Investir"
-3. Extract the date (format: d MMMM yyyy)
+3. Extract the date (format: d MMMM yyyy). If you can't find the article date, or aren't 100% certain, use today's date
 4. Clean the article by removing any website boilerplate, ads, or irrelevant content. Please try to respect and understand the different paragraphs of the original article and reproduce those in your cleaned text. Then translate the entire cleaned article text to {output_language}.
 5. {lang_instructions["summary_instruction"]}
 6. Double check the source : is what you found correct ?
@@ -277,7 +277,7 @@ def create_word_doc(article_data, output_path):
     # Set document properties
     core_props = doc.core_properties
     title_run = title.add_run(f"{article_data.get('title', 'Untitled')} — {article_data.get('source', 'Unknown')}, {article_data.get('date', 'No date')}")
-    core_props.title = (f"{article_data.get("source", "Unknown")}_{article_data.get("title", "Untitled")}_{article_data.get("date","No date")}")
+    core_props.title = f"{article_data.get('source', 'Unknown')}_{article_data.get('title', 'Untitled')}_{article_data.get('date', 'No date')}"
     core_props.author = article_data.get("source", "Unknown")
     
     # Add title

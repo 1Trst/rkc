@@ -536,7 +536,10 @@ with tab1:
                     # Create Word documents
                     doc_paths = []
                     for i, article in enumerate(cleaned_articles):
-                        file_name = re.sub(r'[^0-9A-Za-z_]+', '_', article.get("title", f"doc_{i}")) + ".docx"
+                        art_source = re.sub(r'[^0-9A-Za-z_]+', '_', article.get("source", "Unknown"))
+                        art_title = re.sub(r'[^0-9A-Za-z_]+', '_', article.get("title", f"doc_{i}"))
+                        art_date = re.sub(r'[^0-9A-Za-z_]+', '_', article.get("date", "NoDate"))
+                        file_name = f"{art_source}_{art_title}_{art_date}.docx"
                         doc_path = os.path.join(workdir, file_name)
                         create_word_doc(article, doc_path)
                         doc_paths.append(doc_path)

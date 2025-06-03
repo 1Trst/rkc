@@ -65,7 +65,7 @@ def check_password():
 if not check_password():
     st.stop()
 # UI
-st.title("📝 Article Cleaner & Newsletter Generator v2")
+st.title("📝 Article Cleaner & Newsletter Generator v1")
 
 # Show API key status in sidebar
 with st.sidebar:

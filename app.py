@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Streamlit Article Cleaner and Newsletter Generator: upload, clean, generate, and download Word documents with minimal API calls
+Streamlit Article Cleaner and Newsletter Generator: upload, clean, generate, and download Word documents
+Enhanced version with Newsdesk support and image handling
 """
 import streamlit as st
 import zipfile
@@ -9,26 +10,30 @@ import tempfile
 import os
 import re
 import base64
+import unicodedata
+from datetime import datetime
 from docx import Document as DocxDocument
-from docx.shared import Pt
+from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from openai import AzureOpenAI
 import asyncio
 import httpx
 import json
 from concurrent.futures import ThreadPoolExecutor
+from PIL import Image
+import fitz  # PyMuPDF for PDF processing with images
 
 # Azure settings - Get from environment variables
 key = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "https://rkcazureai.cognitiveservices.azure.com/")
 
-#Edit
 # Language selection
 LANGUAGES = {
     "Français": "French",
     "English": "English", 
     "Deutsch": "German"
 }
+
 def check_password():
     """Returns True if the user has entered the correct password."""
     
@@ -64,8 +69,9 @@ def check_password():
 # Check password before showing the main app
 if not check_password():
     st.stop()
+
 # UI
-st.title("📝 Article Cleaner & Newsletter Generator v1")
+st.title("📝 Article Cleaner & Newsletter Generator")
 
 # Show API key status in sidebar
 with st.sidebar:
@@ -89,7 +95,7 @@ if not key:
     """)
     st.stop()
 
-# Main tabs - séparés pour utilisation indépendante
+# Main tabs
 tab1, tab2, tab3 = st.tabs(["🧹 Article Cleaning", "📰 Newsletter Generator", "⚙️ Settings"])
 
 # Initialize Azure OpenAI client
@@ -115,15 +121,231 @@ def ensure_templates_dir():
     """Ensure Templates directory exists with at least a Generic template"""
     os.makedirs("Templates", exist_ok=True)
     # Create a generic template if none exists
-    generic_path = os.path.join("Templates", "Generic_Template.docx")
+    generic_path = os.path.join("Templates", "2025_Generic_Template.docx")
     if not os.path.exists(generic_path):
         doc = DocxDocument()
         doc.save(generic_path)
     return os.path.exists("Templates")
 
-# File handling functions
+# Enhanced file handling functions with image extraction
+def extract_images_from_pdf(file_path, workdir):
+    """Extract images from PDF and return image info - improved for better filtering"""
+    images_info = []
+    try:
+        doc = fitz.open(file_path)
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            image_list = page.get_images(full=True)
+            
+            for img_index, img in enumerate(image_list):
+                xref = img[0]
+                pix = fitz.Pixmap(doc, xref)
+                
+                # Filter out very small images (likely logos/icons) and ensure proper format
+                if pix.n - pix.alpha < 4 and pix.width > 100 and pix.height > 100:  # Minimum size filter
+                    img_filename = f"page_{page_num+1}_img_{img_index+1}.png"
+                    img_path = os.path.join(workdir, img_filename)
+                    
+                    # Convert to RGB if needed and save
+                    if pix.n == 4:  # CMYK
+                        pix = fitz.Pixmap(fitz.csRGB, pix)
+                    
+                    pix.save(img_path)
+                    
+                    images_info.append({
+                        'page': page_num + 1,
+                        'filename': img_filename,
+                        'path': img_path,
+                        'description': f"Content image from page {page_num + 1}",
+                        'width': pix.width,
+                        'height': pix.height
+                    })
+                
+                pix = None
+        doc.close()
+    except Exception as e:
+        st.warning(f"Could not extract images from PDF: {str(e)}")
+    
+    return images_info
+
+def clean_source_name(source):
+    """Clean source name by removing 'Online' except for specific cases"""
+    if not source:
+        return "Unknown"
+    
+    # Exceptions: keep "Online" for these sources
+    exceptions = ["Wallstreet Online", "KMA Online"]
+    
+    # Check if the source is in exceptions (case-insensitive)
+    for exception in exceptions:
+        if source.lower() == exception.lower():
+            return source
+    
+    # Remove "Online" from other sources
+    if source.endswith(" Online"):
+        return source[:-7]  # Remove " Online"
+    
+    return source
+
+def clean_title_for_filename(title):
+    """Clean title for use in filename by removing only problematic characters"""
+    if not title:
+        return "Untitled"
+    
+    # Only replace characters that are actually problematic for Windows/filesystem
+    # These are the forbidden characters: < > : " / \ | ? *
+    invalid_chars = {
+        '<': '',   # Remove
+        '>': '',   # Remove  
+        ':': ' ',  # Replace with space
+        '"': "'",  # Replace with single quote
+        '/': ' ',  # Replace with space
+        '\\': ' ', # Replace with space
+        '|': ' ',  # Replace with space
+        '?': '',   # Remove
+        '*': '',   # Remove
+    }
+    
+    # Apply replacements
+    for old, new in invalid_chars.items():
+        title = title.replace(old, new)
+    
+    # Clean up multiple spaces
+    title = re.sub(r'\s+', ' ', title)
+    title = title.strip()
+    
+    # Limit length
+    if len(title) > 100:
+        title = title[:100].rstrip()
+    
+    return title or "Untitled"
+
+def format_date_french(date_str):
+    """Convert date to ddmmmyyyy format with French months"""
+    if not date_str or date_str == "No date":
+        now = datetime.now()
+        return format_date_french_from_datetime(now)
+    
+    french_months = {
+        1: 'jan', 2: 'fev', 3: 'mar', 4: 'avr',
+        5: 'mai', 6: 'jui', 7: 'jul', 8: 'aou',
+        9: 'sep', 10: 'oct', 11: 'nov', 12: 'dec'
+    }
+    
+    # Try to parse various date formats
+    date_formats = [
+        "%d %B %Y", "%d %b %Y", "%Y-%m-%d", "%d/%m/%Y",
+        "%d-%m-%Y", "%d.%m.%Y", "%d %m %Y", "%B %d, %Y", "%b %d, %Y"
+    ]
+    
+    parsed_date = None
+    for fmt in date_formats:
+        try:
+            parsed_date = datetime.strptime(date_str.strip(), fmt)
+            break
+        except ValueError:
+            continue
+    
+    if not parsed_date:
+        # Extract numbers and try to parse
+        numbers = re.findall(r'\d+', date_str)
+        if len(numbers) >= 3:
+            try:
+                if int(numbers[0]) > 31:  # Year first
+                    year, month, day = int(numbers[0]), int(numbers[1]), int(numbers[2])
+                else:  # Day first
+                    day, month, year = int(numbers[0]), int(numbers[1]), int(numbers[2])
+                
+                if year < 100:
+                    year += 2000 if year < 50 else 1900
+                
+                parsed_date = datetime(year, month, day)
+            except (ValueError, IndexError):
+                pass
+    
+    if parsed_date:
+        return format_date_french_from_datetime(parsed_date)
+    else:
+        return format_date_french_from_datetime(datetime.now())
+
+def format_date_french_from_datetime(dt):
+    """Format datetime object to ddmmmyyyy with French months"""
+    french_months = {
+        1: 'jan', 2: 'fev', 3: 'mar', 4: 'avr',
+        5: 'mai', 6: 'jui', 7: 'jul', 8: 'aou',
+        9: 'sep', 10: 'oct', 11: 'nov', 12: 'dec'
+    }
+    
+    day = f"{dt.day:02d}"
+    month = french_months[dt.month]
+    year = str(dt.year)
+    
+    return f"{day}{month}{year}"
+
+def generate_docx_filename(source, title, date):
+    """Generate DOCX filename in format: Source_Title_date.docx"""
+    clean_source = clean_source_name(source)
+    clean_title = clean_title_for_filename(title)
+    formatted_date = format_date_french(date)
+    
+    # Construct filename - only use underscores to separate main components
+    filename = f"{clean_source}_{clean_title}_{formatted_date}.docx"
+    
+    return filename
+
+def read_file_content_with_images(file_path, workdir):
+    """Read file content and extract images if available - improved text extraction"""
+    ext = file_path.split('.')[-1].lower()
+    content = ""
+    images = []
+    
+    try:
+        if ext == 'pdf':
+            # Extract images first
+            images = extract_images_from_pdf(file_path, workdir)
+            
+            # Enhanced text extraction using PyMuPDF for better formatting
+            try:
+                import fitz
+                doc = fitz.open(file_path)
+                text_blocks = []
+                
+                for page_num in range(len(doc)):
+                    page = doc.load_page(page_num)
+                    # Get text with better formatting preservation
+                    page_text = page.get_text("text")
+                    if page_text.strip():
+                        text_blocks.append(page_text)
+                
+                content = "\n\n".join(text_blocks)
+                doc.close()
+            except:
+                # Fallback to PyPDF2 if fitz fails
+                import PyPDF2
+                with open(file_path, 'rb') as f:
+                    reader = PyPDF2.PdfReader(f)
+                    content = "\n".join([page.extract_text() for page in reader.pages])
+                
+        elif ext == 'txt':
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+        elif ext == 'docx':
+            doc = DocxDocument(file_path)
+            content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+        elif ext == 'md':
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+        else:
+            content = ""
+            
+    except Exception as e:
+        st.error(f"Error reading {file_path}: {str(e)}")
+        
+    return content, images
+
+# Helper function for reading file content (backward compatibility)
 def read_file_content(file_path):
-    """Read file content based on extension"""
+    """Read file content based on extension (without images)"""
     ext = file_path.split('.')[-1].lower()
     
     try:
@@ -163,12 +385,11 @@ def get_language_instructions(language, article_summary_sentences=3, exec_summar
 Respond only with the executive summary in {language.upper()} (around {exec_summary_sentences} sentences), without additional introduction or conclusion."""
     }
 
-# Process articles with Azure OpenAI
-async def process_article_async(client, text, language="French", article_summary_sentences=3):
-    """Process a single article with Azure OpenAI"""
+# Enhanced prompts for different article types
+def get_newsdesk_prompt(text, language="French", article_summary_sentences=3):
+    """Get specialized prompt for Nexis Newsdesk articles"""
     lang_instructions = get_language_instructions(language, article_summary_sentences)
     
-    # Get language-specific instructions for translation
     if language == "French":
         translation_instruction = "Keep the title and article text in their original language if they are already in French, otherwise translate them to French."
         output_language = "French"
@@ -178,314 +399,123 @@ async def process_article_async(client, text, language="French", article_summary
     else:  # German
         translation_instruction = "Translate the title and article text to German."
         output_language = "German"
-    
-    # Extract metadata and clean in one call
-    combined_prompt = f"""You will be provided a poorly copy/pasted article from a single journal/website. Please extract the following information and clean this article in JSON format:
 
-1. Extract and clean the title (remove problematic characters like &,/,<,>,#,»,«,é,è,ê,â,à), then translate it to {output_language}.
-2. Extract the source of the article (journal or website name) it has to be in the following list : 
-sources = [
-    "BDU",
-    "BearingPoint",
-    "Benzinga",
-    "BFMTV",
-    "Bilanz",
-    "Biometricupdate.com",
-    "Blick",
-    "Blogdumoderateur",
-    "Bloomberg",
-    "BNN",
-    "Börse München",
-    "Börsen-Zeitung",
-    "Boursereidt",
-    "Boursorama",
-    "BPCE",
-    "Business Insider",
-    "Business of Fashion",
-    "BusinessWire",
-    "Capgemini",
-    "Capital",
-    "CBNews",
-    "CEP",
-    "Cercle Finance",
-    "CGI",
-    "Challenges",
-    "Channel News",
-    "ChannelBiz",
-    "CIO Dive",
-    "CIO",
-    "01 Net",
-    "24 heures.ch",
-    "ABC Bourse",
-    "Accenture",
-    "Acteurs publics",
-    "Actu fr",
-    "Actu IA",
-    "Actu-Environnement",
-    "Ad Hoc News",
-    "ADVFN",
-    "AFP",
-    "Agefi Patrimoine",
-    "Agefi",
-    "Air&Cosmos",
-    "Alliancy",
-    "Allnews.ch",
-    "Alten",
-    "Alternatives économiques",
-    "Andersen",
-    "Appenzeller Zeitung",
-    "Aujourd'hui Maroc",
-    "Automobil Industrie",
-    "AWP",
-    "Bain",
-    "Banques des Territoires",
-    "Barclays",
-    "Basic",
-    "Batjournal",
-    "Batrima",
-    "Batiweb",
-    "BCG",
-    "CityAM",
-    "Citywire",
-    "CNN Numérique",
-    "Combourso",
-    "Comminmag.ch",
-    "Computer Weekly",
-    "Consultancy Asia",
-    "Consultancy EU",
-    "Consultancy UK",
-    "Consultancy US",
-    "Consulting DE",
-    "Consulting Magazine",
-    "Consulting US",
-    "Consultor",
-    "CRN",
-    "Cryptonaute",
-    "DataNews",
-    "Décideurs Magazine",
-    "Décision Achats",
-    "Deloitte",
-    "Devoteam",
-    "Die Welt",
-    "DINUM",
-    "Distributique",
-    "Dow Jones News",
-    "EdTechActu",
-    "Electroniques",
-    "EMarketing",
-    "Emplois Numériques",
-    "ENP Newswire",
-    "Entreprendre",
-    "Environnement Magazine",
-    "EQS",
-    "ERP Today",
-    "ESSNEWS",
-    "Europavie",
-    "EY",
-    "Europe 1",
-    "Fashion Network",
-    "Finance+",
-    "Financial Reporter",
-    "Financial Times",
-    "Finanzen.net",
-    "Finanznachrichten",
-    "Finews.ch",
-    "Finyear",
-    "Firmenpresse",
-    "Forbes",
-    "Fortune",
-    "Forvis mazars",
-    "France info",
-    "Frankfurter",
-    "Frenchweb",
-    "Fusacq",
-    "Geodis",
-    "Global Capital",
-    "Global security mag",
-    "Globe Newswire",
-    "Handelsblatt",
-    "HBR",
-    "Horizons Publics",
-    "Hospitality",
-    "HR One",
-    "ICT Journal",
-    "Immobilien Zeitung",
-    "Industrie mag",
-    "Info social RH",
-    "InfoMédiarie",
-    "Information.be",
-    "Infotechlead",
-    "Insider",
-    "Insurance Business",
-    "Insurance News",
-    "International Business Times",
-    "Investing.com",
-    "InvestingWeek",
-    "Investopedia",
-    "IT Business",
-    "IT Channel",
-    "ITespresso",
-    "IT for Business",
-    "IT nation",
-    "IT Social",
-    "IT&Production",
-    "IT Finanzmagazine",
-    "iti prof",
-    "ITPro",
-    "ITReseller",
-    "ITRNNews",
-    "Kea",
-    "KMA Online",
-    "KPMG",
-    "La Correspondance de la Presse",
-    "La Correspondance Economique",
-    "La Croix",
-    "La Lettre de la bourse",
-    "La Lettre de l'Expansion",
-    "La Lettre du Cash",
-    "La Lettre du Conseil",
-    "La Lettre",
-    "La Libre Belgique",
-    "La Nouvelle Tribune",
-    "La revue du digital",
-    "La Tribune de l'assurance",
-    "La Tribune",
-    "La Voix du Nord",
-    "L'ADN",
-    "L'Agefi",
-    "L'Argus de l'assurance",
-    "L'assurance en mouvement",
-    "L'Automobile & L'Entreprise",
-    "Le Dauphiné",
-    "Le Desk",
-    "Le Figaro",
-    "Le JDD",
-    "Le Journal des entreprises",
-    "Le Mag IT",
-    "Le Matin.ch",
-    "Le Monde du chiffre",
-    "Le Monde Informatique",
-    "Le Monde",
-    "Le Moniteur",
-    "Le Nouvel Obs",
-    "Le Parisien",
-    "Le Point",
-    "Le Revenu",
-    "Le Temps",
-    "L'économiste",
-    "Les Echos Capital Finance",
-    "Les Echos Investir",
-    "Les Echos Start",
-    "Les Echos",
-    "L'Essentiel",
-    "L'Express",
-    "Liberation",
-    "Linéaires",
-    "L'Informaticien",
-    "L'Informatique",
-    "LSA",
-    "L'Usine Digitale",
-    "L'Usine Nouvelle",
-    "Luxemburger Wort",
-    "Manager magazin",
-    "Market Insider",
-    "MarketLine",
-    "Mazars",
-    "MCA",
-    "McKinsey",
-    "Médiapart",
-    "MHP",
-    "Midi Libre",
-    "MSDW",
-    "MtoM",
-    "MyRHline",
-    "Negoce",
-    "New York Observer",
-    "News 24",
-    "News assurances pro",
-    "News informatique",
-    "NewsWire",
-    "NextGovFCW",
-    "Nouvelles du monde",
-    "Newnet",
-    "NTN",
-    "Numerama",
-    "Numen",
-    "Nvidia",
-    "Oliver Wyman",
-    "OLINews",
-    "Option Finance",
-    "Organisator",
-    "OTS Deutschland",
-    "Ouest France",
-    "PaperJam",
-    "PeopleatWork",
-    "Planet Fintech",
-    "Planet Labor",
-    "PME Magazine",
-    "Politico",
-    "Presse Agence",
-    "Pressetorial",
-    "Public Senat",
-    "PwC",
-    "ReiterPR",
-    "Reuters",
-    "Revue Banque",
-    "Risk.net",
-    "RolandBerger",
-    "RSE datanews",
-    "SecurityWeek",
-    "Sia",
-    "Siècle Digital",
-    "Silicon",
-    "SITSI (PAC)",
-    "SNL Financial",
-    "Solutions Numériques",
-    "Sopra Steria",
-    "Source Global Research",
-    "Sport Buzz Business",
-    "StartupHub.AL",
-    "StorageInsider",
-    "Stratégies Logistiques",
-    "Studyrama",
-    "SupplyChain Magazine",
-    "Tageschau",
-    "Teller Report",
-    "The Conversation",
-    "The daily Telegraph",
-    "The Economist",
-    "The Fast Mode",
-    "The Guardian",
-    "The Independent",
-    "The Irish Times",
-    "The Silicon Review",
-    "The Telegraph",
-    "The Wall Street Journal",
-    "Tic+",
-    "Trace",
-    "Trends",
-    "Tribune de Genève",
-    "Tripalio",
-    "UKTN",
-    "VentureBeat",
-    "Virgule",
-    "Voxlog",
-    "VRT",
-    "WallStreet Online",
-    "Wansquare",
-    "Weka",
-    "Welt Am Sonntag",
-    "Workplace Magazine",
-    "WWD",
-    "ZDNet",
-    "Zonebourse"
+    return f"""You are processing a Nexis Newsdesk document that may contain one or more articles from various sources.
+
+CRITICAL OUTPUT FORMAT: Return ONLY a JSON array starting with [ and ending with ]. Do NOT wrap in any other object.
+
+ARTICLE IDENTIFICATION PATTERN:
+Nexis Newsdesk documents follow this structure:
+1. Header information to IGNORE (Exclusion de responsabilité, Flux, Plage de dates, Téléchargé)
+2. Article titles in blue/bold formatting
+3. Source line format: "Source Name | Author | Date Time"
+4. Full article content
+5. Sometimes footer information to IGNORE
+
+EXTRACTION PROCESS:
+1. IDENTIFY each individual article by looking for:
+   - Clear article titles (often in blue/larger text)
+   - Source attribution lines (Source | Author | Date pattern)
+   - Article content that follows
+
+2. For EACH article found:
+   - Title: Extract the exact headline
+   - Source: Extract from source line - common sources include: "Le Figaro Online", "Les Echos", "Les Echos Investir", "Le Monde", "Financial Times", "Handelsblatt", "La Lettre", "Consultor", "La Correspondance économique"
+   - Date: Extract from source line (formats like "DD MMM YYYY" or "DD avr. YYYY")
+   - Content: Full article text, removing only Nexis headers/footers BUT PRESERVING ORIGINAL PARAGRAPH STRUCTURE
+   - Summary: Generate {article_summary_sentences} sentences in {output_language}
+
+3. REMOVE these Nexis elements:
+   - "Exclusion de responsabilité : Ce document Nexis Newsdesk®..."
+   - "Flux: [anything]"
+   - "Plage de dates: [anything]"
+   - "Téléchargé(e): [date] par [email]"
+   - Footer copyright notices
+   - Navigation elements
+
+CRITICAL - PARAGRAPH PRESERVATION:
+- PRESERVE the original paragraph structure and line breaks from the source articles
+- Do NOT merge multiple paragraphs into one large block of text
+- Maintain natural paragraph separations as they appear in the original
+- Keep the logical flow and structure of the original article
+- Each paragraph should remain as a separate paragraph in the cleaned_text
+- Use proper line breaks (\\n\\n) to separate paragraphs in the JSON string
+
+REQUIRED OUTPUT FORMAT (must be a direct array):
+[
+    {{
+        "title": "exact article title without special characters",
+        "source": "source name from source line",
+        "date": "DD MMM YYYY",
+        "year": "YYYY",
+        "cleaned_text": "full article content with PRESERVED paragraph structure and line breaks",
+        "summary": "{article_summary_sentences} sentence summary in {output_language}"
+    }},
+    {{
+        "title": "second article title if exists",
+        "source": "second source",
+        "date": "DD MMM YYYY",
+        "year": "YYYY", 
+        "cleaned_text": "second article content with PRESERVED paragraph structure",
+        "summary": "summary of second article"
+    }}
 ]
-3. Extract the date (format: d MMMM yyyy). If you can't find the article date, or aren't 100% certain, use today's date
-4. Clean the article by removing any website boilerplate, ads, or irrelevant content. Please try to respect and understand the different paragraphs of the original article and reproduce those in your cleaned text. Then translate the entire cleaned article text to {output_language}.
+
+IMPORTANT RULES:
+- Start response with [
+- End response with ]
+- Do NOT use {{"articles": [...] }} wrapper format
+- Extract ALL articles found in the document
+- If only 1 article found, return array with 1 object
+- If multiple articles found, return array with multiple objects
+- Each article object must have all 6 fields: title, source, date, year, cleaned_text, summary
+- PRESERVE paragraph structure in cleaned_text - do NOT create one big text block
+- Use \\n\\n to separate paragraphs in the cleaned_text field
+- {translation_instruction}
+
+Document to process:
+{text}"""
+
+# Process articles with Azure OpenAI with retry logic
+async def process_article_async(client, text, language="French", article_summary_sentences=3, is_newsdesk=False):
+    """Process a single article with Azure OpenAI with retry logic"""
+    import time
+    
+    if is_newsdesk:
+        prompt = get_newsdesk_prompt(text, language, article_summary_sentences)
+    else:
+        lang_instructions = get_language_instructions(language, article_summary_sentences)
+        
+        # Get language-specific instructions for translation
+        if language == "French":
+            translation_instruction = "Keep the title and article text in their original language if they are already in French, otherwise translate them to French."
+            output_language = "French"
+        elif language == "English":
+            translation_instruction = "Translate the title and article text to English."
+            output_language = "English"
+        else:  # German
+            translation_instruction = "Translate the title and article text to German."
+            output_language = "German"
+        
+        # Standard prompt for regular articles
+        prompt = f"""You will be provided a poorly copy/pasted article from a single journal/website. Please extract the following information and clean this article in JSON format:
+
+1. Extract and clean the title (remove problematic characters like &,/,<,>,#,»,«), then translate it to {output_language}.
+2. Extract the source of the article (journal or website name) it has to be in the following list : ["Consultor","Financial Times","Handelsblatt","La Lettre_du_Conseil","La Lettre","Les Echos Investir","Les Echos","Le Monde","Le Figaro Online","La Correspondance économique"]. Pay close attention to this part, and detect the difference between "Les Echos" et "Les Echos Investir"
+3. Extract the date (format: d MMMM yyyy)
+4. Clean the article by removing any website boilerplate, ads, or irrelevant content. IMPORTANT: Please try to respect and understand the different paragraphs of the original article and reproduce those in your cleaned text - PRESERVE the original paragraph structure and line breaks. Do NOT merge multiple paragraphs into one large block of text. Then translate the entire cleaned article text to {output_language}.
 5. {lang_instructions["summary_instruction"]}
 6. Double check the source : is what you found correct ?
 
 IMPORTANT: {translation_instruction}
+
+CRITICAL - PARAGRAPH PRESERVATION:
+- PRESERVE the original paragraph structure and line breaks from the source article
+- Do NOT merge multiple paragraphs into one large block of text
+- Maintain natural paragraph separations as they appear in the original
+- Keep the logical flow and structure of the original article
+- Each paragraph should remain as a separate paragraph in the cleaned_text
+- Use proper line breaks (\\n\\n) to separate paragraphs in the JSON string
 
 Return ONLY a JSON object with these fields:
 {{
@@ -493,7 +523,7 @@ Return ONLY a JSON object with these fields:
     "source": "source (keep original name)", 
     "date": "date",
     "year": "yyyy",
-    "cleaned_text": "full cleaned article text translated to {output_language}",
+    "cleaned_text": "full cleaned article text translated to {output_language} with PRESERVED paragraph structure and proper \\n\\n separators",
     "summary": "around {article_summary_sentences} sentences summary in {lang_instructions['summary_lang']}"
 }}
 
@@ -501,19 +531,33 @@ Here's the text to process:
 
 {text}"""
 
-    try:
-        response = await asyncio.to_thread(
-            client.chat.completions.create,
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": combined_prompt}],
-            response_format={"type": "json_object"},
-            temperature=0
-        )
-        
-        return response.choices[0].message.content
-    except Exception as e:
-        st.error(f"Error processing article: {str(e)}")
-        return "{}"
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = await asyncio.to_thread(
+                client.chat.completions.create,
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=0
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "rate limit" in error_str.lower():
+                if attempt < max_retries - 1:
+                    wait_time = 60 * (attempt + 1)  # Wait 60, 120, 180 seconds
+                    st.warning(f"⏳ Rate limit hit. Waiting {wait_time} seconds before retry {attempt + 2}/{max_retries}...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    st.error(f"❌ Rate limit exceeded after {max_retries} attempts. Please upgrade your Azure OpenAI tier or try again later.")
+                    return "{}" if not is_newsdesk else "[]"
+            else:
+                st.error(f"Error processing article: {str(e)}")
+                return "{}" if not is_newsdesk else "[]"
 
 # Generate executive summary
 async def generate_executive_summary(client, articles, language="French", exec_summary_sentences=7):
@@ -545,62 +589,128 @@ async def generate_executive_summary(client, articles, language="French", exec_s
         return "Error generating executive summary."
 
 # Process multiple articles in parallel
-async def process_articles(client, articles, language="French", article_summary_sentences=3):
+async def process_articles(client, articles, language="French", article_summary_sentences=3, is_newsdesk=False):
     """Process multiple articles concurrently"""
-    tasks = [process_article_async(client, text, language, article_summary_sentences) for text in articles]
+    tasks = [process_article_async(client, text, language, article_summary_sentences, is_newsdesk) for text in articles]
     return await asyncio.gather(*tasks)
 
-# Create Word document from cleaned article
-def create_word_doc(article_data, output_path):
-    """Create a Word document from cleaned article data using source-based template"""
-    source = article_data.get("source", "Generic")
-    source_template_name = source.replace(' ', '_') + '_Template.docx'
+# Enhanced template handling with new naming convention
+def get_template_path(source, is_newsdesk=False):
+    """Get template path with new 2025_source_Template.docx naming convention (keeping spaces in source name)"""
+    # For Newsdesk mode, normalize "Source Online" to "Source"
+    if is_newsdesk and source.endswith(" Online"):
+        source = source.replace(" Online", "")
     
-    # Look for source-specific template
-    template_path = os.path.join('Templates', source_template_name)
+    # Keep spaces in source name for template filename
+    template_name = f"2025_{source}_Template.docx"
+    template_path = os.path.join('Templates', template_name)
+    
+    # Fall back to generic template if source-specific doesn't exist
     if not os.path.exists(template_path):
-        # Fall back to Generic template
-        template_path = os.path.join('Templates', 'Generic_Template.docx')
-        if not os.path.exists(template_path):
-            # If generic template doesn't exist, create a new document
-            doc = DocxDocument()
+        generic_path = os.path.join('Templates', '2025_Generic_Template.docx')
+        if os.path.exists(generic_path):
+            return generic_path
         else:
-            doc = DocxDocument(template_path)
-    else:
-        # Found source-specific template
-        doc = DocxDocument(template_path)
+            # Create generic template if it doesn't exist
+            doc = DocxDocument()
+            doc.save(generic_path)
+            return generic_path
     
-    # Set document properties
+    return template_path
+
+# Enhanced Word document creation with image support and new template system
+def create_word_doc_with_images(article_data, output_path, images_info=None, is_newsdesk=False):
+    """Create a Word document from cleaned article data with images using new template system"""
+    source = article_data.get("source", "Generic")
+    
+    # Use new template system with newsdesk awareness
+    template_path = get_template_path(source, is_newsdesk)
+    doc = DocxDocument(template_path)
+    
+    # CLEAR ALL EXISTING CONTENT FROM TEMPLATE
+    # Remove all paragraphs from the document
+    for paragraph in doc.paragraphs:
+        p = paragraph._element
+        p.getparent().remove(p)
+        p._p = p._element = None
+    
+    # Generate proper filename
+    source_name = article_data.get("source", "Unknown")
+    title = article_data.get("title", "Untitled")
+    date = article_data.get("date", "No date")
+    
+    proper_filename = generate_docx_filename(source_name, title, date)
+    
+    # Update the output path to use the proper filename
+    output_dir = os.path.dirname(output_path)
+    new_output_path = os.path.join(output_dir, proper_filename)
+    
+    # Set document properties using the cleaned filename (without .docx)
     core_props = doc.core_properties
-    core_props.title = "{}_{}_{}".format(
-    article_data.get("source", "Unknown"),
-    article_data.get("title", "Untitled"),
-    article_data.get("date", "No date"))
-    core_props.author = article_data.get("source", "Unknown")
+    core_props.title = proper_filename[:-5]  # Remove .docx extension
+    core_props.author = source_name
     
     # Add title
-    title = doc.add_paragraph()
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    title_run = title.add_run(f"{article_data.get('title', 'Untitled')} — {article_data.get('source', 'Unknown')}, {article_data.get('date', 'No date')}")
+    title_paragraph = doc.add_paragraph()
+    title_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title_run = title_paragraph.add_run(f"{title} — {source_name}, {date}")
     title_run.bold = True
     title_run.font.size = Pt(16)
     title_run.font.name = 'Aptos'
     
-    # Add article body
-    body = doc.add_paragraph(article_data.get("cleaned_text", "No content available"))
-    body.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    # Add images if available
+    if images_info:
+        for img_info in images_info:
+            try:
+                img_paragraph = doc.add_paragraph()
+                img_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                
+                run = img_paragraph.add_run()
+                run.add_picture(img_info['path'], width=Inches(5))
+                
+                # Add image caption
+                caption = doc.add_paragraph(f"Figure: {img_info['description']}")
+                caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                caption_run = caption.runs[0]
+                caption_run.italic = True
+                caption_run.font.size = Pt(10)
+                
+            except Exception as e:
+                st.warning(f"Could not add image {img_info['filename']}: {str(e)}")
     
-    # Save document
-    doc.save(output_path)
-    return output_path
+    # Add article body - SPLIT INTO SEPARATE PARAGRAPHS TO FIX JUSTIFICATION
+    article_text = article_data.get("cleaned_text", "No content available")
+    
+    # Split the text by double line breaks (paragraph separators)
+    paragraphs = article_text.split('\n\n')
+    
+    # Add each paragraph separately
+    for paragraph_text in paragraphs:
+        if paragraph_text.strip():  # Only add non-empty paragraphs
+            # Clean up single line breaks within the paragraph (replace with spaces)
+            clean_paragraph = paragraph_text.replace('\n', ' ').strip()
+            
+            # Add the paragraph
+            body_paragraph = doc.add_paragraph(clean_paragraph)
+            body_paragraph.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            
+            # Optional: Add some spacing between paragraphs
+            body_paragraph.paragraph_format.space_after = Pt(6)
+    
+    # Save document with the proper filename
+    doc.save(new_output_path)
+    return new_output_path
 
-# Create newsletter document
-def create_newsletter_doc(exec_summary, articles, output_path):
-    """Create a Word document with newsletter content"""    
+
+# Create newsletter document with images
+def create_newsletter_doc_with_images(exec_summary, articles, output_path, all_images=None):
+    """Create a Word document with newsletter content and images"""    
     doc = DocxDocument()
+    
     # Set document properties
     core_props = doc.core_properties
     core_props.title = "AI Generated Newsletter"
+    
     # Title
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.LEFT
@@ -618,16 +728,46 @@ def create_newsletter_doc(exec_summary, articles, output_path):
     date_run.font.size = Pt(12)
     
     # Executive summary 
-    # heading
     doc.add_paragraph()
     exec_heading = doc.add_paragraph()
     exec_heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
     exec_heading_run = exec_heading.add_run("Executive Summary")
     exec_heading_run.bold = True
     exec_heading_run.font.size = Pt(16)    
-    # content
-    exec_content = doc.add_paragraph(exec_summary)
-    exec_content.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    
+    # Executive summary content - SPLIT INTO PARAGRAPHS
+    exec_paragraphs = exec_summary.split('\n\n')
+    for paragraph_text in exec_paragraphs:
+        if paragraph_text.strip():
+            clean_paragraph = paragraph_text.replace('\n', ' ').strip()
+            exec_content = doc.add_paragraph(clean_paragraph)
+            exec_content.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            exec_content.paragraph_format.space_after = Pt(6)
+    
+    # Add sample images if available
+    if all_images:
+        doc.add_paragraph()
+        img_heading = doc.add_paragraph()
+        img_heading_run = img_heading.add_run("Visual Content")
+        img_heading_run.bold = True
+        img_heading_run.font.size = Pt(14)
+        
+        for i, img_info in enumerate(all_images[:3]):  # Limit to first 3 images
+            try:
+                img_paragraph = doc.add_paragraph()
+                img_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                
+                run = img_paragraph.add_run()
+                run.add_picture(img_info['path'], width=Inches(4))
+                
+                caption = doc.add_paragraph(f"Figure {i+1}: {img_info['description']}")
+                caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                caption_run = caption.runs[0]
+                caption_run.italic = True
+                caption_run.font.size = Pt(10)
+                
+            except Exception as e:
+                st.warning(f"Could not add image to newsletter: {str(e)}")
     
     # Separator
     doc.add_paragraph()
@@ -645,9 +785,19 @@ def create_newsletter_doc(exec_summary, articles, output_path):
         title_run.bold = True
         title_run.font.size = Pt(14)
         
-        # Article summary
-        summary = doc.add_paragraph(article['summary'])
-        summary.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        # Article summary - SPLIT INTO SEPARATE PARAGRAPHS TO FIX FORMATTING
+        summary_text = article['summary']
+        summary_paragraphs = summary_text.split('\n\n')
+        
+        for paragraph_text in summary_paragraphs:
+            if paragraph_text.strip():
+                # Clean up single line breaks within the paragraph
+                clean_paragraph = paragraph_text.replace('\n', ' ').strip()
+                
+                # Add the paragraph
+                summary_paragraph = doc.add_paragraph(clean_paragraph)
+                summary_paragraph.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                summary_paragraph.paragraph_format.space_after = Pt(6)
         
         # Separator between articles
         doc.add_paragraph()
@@ -678,9 +828,9 @@ def create_zip_from_files(file_paths):
             zf.write(file_path, os.path.basename(file_path))
     return zip_buffer.getvalue()
 
-# Extract file paths
-def get_paths(files):
-    """Get file paths from uploaded files"""
+# Extract file paths with temporary directory for images
+def get_paths_with_workdir(files):
+    """Get file paths from uploaded files with a shared working directory"""
     workdir = tempfile.mkdtemp()
     paths = []
     for f in files or []:
@@ -700,8 +850,8 @@ with tab3:
         options=list(LANGUAGES.keys()),
         index=0,  # Default to French
         help="This will affect the language of article summaries and newsletter content",
-        key="language_selector"  # Add unique key
-)
+        key="language_selector"
+    )
     
     # Store in session state
     st.session_state.output_language = LANGUAGES[selected_language]
@@ -721,7 +871,7 @@ with tab3:
             value=3,
             step=1,
             help="Number of sentences for each article summary in the newsletter",
-             key="article_summary_length"
+            key="article_summary_length"
         )
         st.session_state.article_summary_sentences = article_summary_sentences
     
@@ -733,7 +883,7 @@ with tab3:
             value=7,
             step=1,
             help="Number of sentences for the executive summary",
-            key="exec_summary_length" 
+            key="exec_summary_length"
         )
         st.session_state.exec_summary_sentences = exec_summary_sentences
     
@@ -759,6 +909,27 @@ with tab1:
     output_language = st.session_state.get('output_language', 'French')
     article_summary_sentences = st.session_state.get('article_summary_sentences', 3)
     
+    st.subheader("Processing Options")
+    
+    # Add Newsdesk toggle
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        is_newsdesk = st.toggle(
+            "📰 Newsdesk Mode",
+            value=False,
+            help="Enable this for Nexis Newsdesk documents that contain multiple articles"
+        )
+    
+    with col2:
+        include_images = st.toggle(
+            "🖼️ Include Images",
+            value=True,
+            help="Extract and include images in the final documents (works with PDFs)"
+        )
+    
+    if is_newsdesk:
+        st.info("🔧 **Newsdesk Mode**: Optimized for processing Nexis Newsdesk documents with multiple articles")
+    
     st.subheader("Input Methods")
     
     # Input method selection
@@ -770,6 +941,8 @@ with tab1:
     
     articles_to_process = []
     article_names = []
+    all_images_info = []
+    workdir = None
     
     if input_method == "Upload Files":
         # File upload
@@ -780,9 +953,14 @@ with tab1:
         )
         
         if uploaded_files:
-            paths, workdir = get_paths(uploaded_files)
+            paths, workdir = get_paths_with_workdir(uploaded_files)
             for path in paths:
-                content = read_file_content(path)
+                if include_images:
+                    content, images = read_file_content_with_images(path, workdir)
+                    all_images_info.extend(images)
+                else:
+                    content = read_file_content(path)
+                    
                 if content:
                     articles_to_process.append(content)
                     article_names.append(os.path.basename(path))
@@ -799,9 +977,14 @@ with tab1:
             articles_to_process.append(pasted_text.strip())
             article_names.append("Pasted_Article")
     
-    # Show current settings
+    # Show current settings and image info
     if articles_to_process:
-        st.info(f"Ready to process {len(articles_to_process)} articles with {article_summary_sentences} sentences summaries in {output_language}")
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.info(f"Ready to process {len(articles_to_process)} articles with {article_summary_sentences} sentences summaries in {output_language}")
+        with col2:
+            if all_images_info:
+                st.success(f"🖼️ Found {len(all_images_info)} images")
     
     # Clean articles button
     if st.button("🧹 Clean Articles", use_container_width=True):
@@ -814,42 +997,76 @@ with tab1:
         else:
             with st.spinner("Cleaning articles..."):
                 # Process articles
-                results = asyncio.run(process_articles(client, articles_to_process, output_language, article_summary_sentences))
+                results = asyncio.run(process_articles(client, articles_to_process, output_language, article_summary_sentences, is_newsdesk))
                 
                 # Parse results
                 cleaned_articles = []
                 for i, result in enumerate(results):
                     try:
-                        article_data = json.loads(result)
-                        cleaned_articles.append(article_data)
-                    except json.JSONDecodeError:
-                        st.error(f"Error parsing response for {article_names[i]}")
+                        if is_newsdesk:
+                            # For newsdesk, result should be a JSON array
+                            parsed_data = json.loads(result)
+                            
+                            # Handle both formats: direct array or wrapped in "articles" key
+                            if isinstance(parsed_data, list):
+                                articles_array = parsed_data
+                            elif isinstance(parsed_data, dict) and "articles" in parsed_data:
+                                articles_array = parsed_data["articles"]
+                            elif isinstance(parsed_data, dict):
+                                articles_array = [parsed_data]
+                            else:
+                                continue
+                            
+                            cleaned_articles.extend(articles_array)
+                        else:
+                            # For regular articles, result is a single JSON object
+                            article_data = json.loads(result)
+                            cleaned_articles.append(article_data)
+                            
+                    except json.JSONDecodeError as e:
+                        st.error(f"Error parsing response for {article_names[i]}: {str(e)}")
+                    except Exception as e:
+                        st.error(f"Unexpected error processing result {i+1}: {str(e)}")
                 
                 if cleaned_articles:
-                    # Create temporary directory for this session
-                    workdir = tempfile.mkdtemp()
+                    # Create temporary directory for this session if not exists
+                    if not workdir:
+                        workdir = tempfile.mkdtemp()
                     
                     # Create Word documents
                     doc_paths = []
                     for i, article in enumerate(cleaned_articles):
-                        art_source = re.sub(r'[^0-9A-Za-z_]+', '_', article.get("source", "Unknown"))
-                        art_title = re.sub(r'[^0-9A-Za-z_]+', '_', article.get("title", f"doc_{i}"))
-                        art_date = re.sub(r'[^0-9A-Za-z_]+', '_', article.get("date", "NoDate"))
-                        file_name = f"{art_source}_{art_title}_{art_date}.docx"
-                        doc_path = os.path.join(workdir, file_name)
-                        create_word_doc(article, doc_path)
-                        doc_paths.append(doc_path)
+                        # Generate proper filename
+                        source = article.get("source", "Unknown")
+                        title = article.get("title", f"doc_{i}")
+                        date = article.get("date", "No date")
+                        
+                        # Use the new filename generation
+                        proper_filename = generate_docx_filename(source, title, date)
+                        doc_path = os.path.join(workdir, proper_filename)
+                        
+                        # Assign images to articles (simple distribution for now)
+                        article_images = all_images_info if include_images else None
+                        
+                        # The create_word_doc_with_images function will handle the proper naming
+                        actual_path = create_word_doc_with_images(article, doc_path, article_images, is_newsdesk)
+                        doc_paths.append(actual_path)
                     
                     # Save results to session state
                     st.session_state.cleaned_articles_tab1 = cleaned_articles
                     st.session_state.doc_paths_tab1 = doc_paths
                     st.session_state.workdir_tab1 = workdir
+                    st.session_state.all_images_tab1 = all_images_info
                     
                     st.success(f"Successfully cleaned {len(cleaned_articles)} articles!")
 
     # Display results if available
     if 'cleaned_articles_tab1' in st.session_state:
         st.subheader("Cleaned Articles")
+        
+        # Show image info if available
+        if 'all_images_tab1' in st.session_state and st.session_state.all_images_tab1:
+            st.info(f"🖼️ {len(st.session_state.all_images_tab1)} images were extracted and included in the documents")
         
         # Display articles
         for i, article in enumerate(st.session_state.cleaned_articles_tab1):
@@ -913,11 +1130,17 @@ with tab2:
     articles_for_newsletter = []
     newsletter_articles_to_process = []
     newsletter_article_names = []
+    newsletter_images = []
+    newsletter_workdir = None
         
     if newsletter_source == "Use cleaned articles from Article Cleaning tab":
         if 'cleaned_articles_tab1' in st.session_state:
             articles_for_newsletter = st.session_state.cleaned_articles_tab1
+            newsletter_images = st.session_state.get('all_images_tab1', [])
             st.success(f"Found {len(articles_for_newsletter)} cleaned articles ready for newsletter generation")
+            
+            if newsletter_images:
+                st.info(f"🖼️ {len(newsletter_images)} images will be included in the newsletter")
             
             # Show preview of articles
             with st.expander("Preview articles for newsletter"):
@@ -929,6 +1152,24 @@ with tab2:
     else:  # Upload/Import new articles
         st.subheader("Upload Articles for Newsletter")
         
+        # Processing options for newsletter
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            newsletter_is_newsdesk = st.toggle(
+                "📰 Newsdesk Mode",
+                value=False,
+                help="Enable this for Nexis Newsdesk documents",
+                key="newsletter_newsdesk"
+            )
+        
+        with col2:
+            newsletter_include_images = st.toggle(
+                "🖼️ Include Images",
+                value=True,
+                help="Extract and include images in the newsletter",
+                key="newsletter_images"
+            )
+        
         # Input method for newsletter
         newsletter_input_method = st.radio(
             "Choose input method:",
@@ -936,7 +1177,6 @@ with tab2:
             horizontal=True,
             key="newsletter_input"
         )
-        
         
         if newsletter_input_method == "Upload Files":
             newsletter_uploaded_files = st.file_uploader(
@@ -947,9 +1187,14 @@ with tab2:
             )
             
             if newsletter_uploaded_files:
-                paths, workdir = get_paths(newsletter_uploaded_files)
+                paths, newsletter_workdir = get_paths_with_workdir(newsletter_uploaded_files)
                 for path in paths:
-                    content = read_file_content(path)
+                    if newsletter_include_images:
+                        content, images = read_file_content_with_images(path, newsletter_workdir)
+                        newsletter_images.extend(images)
+                    else:
+                        content = read_file_content(path)
+                        
                     if content:
                         newsletter_articles_to_process.append(content)
                         newsletter_article_names.append(os.path.basename(path))
@@ -970,7 +1215,13 @@ with tab2:
         
         # Show what will be processed
         if newsletter_articles_to_process:
-            st.info(f"Ready to process {len(newsletter_articles_to_process)} articles for newsletter")
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                st.info(f"Ready to process {len(newsletter_articles_to_process)} articles for newsletter")
+            with col2:
+                if newsletter_images:
+                    st.success(f"🖼️ Found {len(newsletter_images)} images")
+                    
             with st.expander("Preview articles to process"):
                 for i, name in enumerate(newsletter_article_names):
                     st.markdown(f"**{i+1}. {name}**")
@@ -995,14 +1246,28 @@ with tab2:
             if newsletter_source != "Use cleaned articles from Article Cleaning tab":
                 with st.spinner("Processing articles for newsletter..."):
                     # Process articles
-                    results = asyncio.run(process_articles(client, newsletter_articles_to_process, output_language, article_summary_sentences))
+                    results = asyncio.run(process_articles(client, newsletter_articles_to_process, output_language, article_summary_sentences, newsletter_is_newsdesk))
                     
                     # Parse results
                     cleaned_articles = []
                     for i, result in enumerate(results):
                         try:
-                            article_data = json.loads(result)
-                            cleaned_articles.append(article_data)
+                            if newsletter_is_newsdesk:
+                                # For newsdesk, result should be a JSON array
+                                parsed_data = json.loads(result)
+                                if isinstance(parsed_data, list):
+                                    articles_array = parsed_data
+                                elif isinstance(parsed_data, dict) and "articles" in parsed_data:
+                                    articles_array = parsed_data["articles"]
+                                elif isinstance(parsed_data, dict):
+                                    articles_array = [parsed_data]
+                                else:
+                                    continue
+                                cleaned_articles.extend(articles_array)
+                            else:
+                                # For regular articles, result is a single JSON object
+                                article_data = json.loads(result)
+                                cleaned_articles.append(article_data)
                         except json.JSONDecodeError:
                             st.error(f"Error parsing response for {newsletter_article_names[i]}")
                     
@@ -1035,6 +1300,8 @@ with tab2:
                     st.session_state.newsletter_language = output_language
                     st.session_state.newsletter_article_sentences = article_summary_sentences
                     st.session_state.newsletter_exec_sentences = exec_summary_sentences
+                    st.session_state.newsletter_images = newsletter_images
+                    st.session_state.newsletter_workdir = newsletter_workdir or st.session_state.get('workdir_tab1')
                     
                     st.success("Newsletter generated successfully!")
     
@@ -1044,7 +1311,14 @@ with tab2:
         
         # Language info
         newsletter_lang = st.session_state.get('newsletter_language', 'French')
-        st.info(f"Newsletter language: {newsletter_lang}")
+        newsletter_images_count = len(st.session_state.get('newsletter_images', []))
+        
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.info(f"Newsletter language: {newsletter_lang}")
+        with col2:
+            if newsletter_images_count > 0:
+                st.success(f"🖼️ {newsletter_images_count} images included")
         
         # Executive Summary
         st.markdown("### Executive Summary")
@@ -1062,14 +1336,17 @@ with tab2:
         if st.button("📄 Download Newsletter as Word Document", use_container_width=True):
             with st.spinner("Creating newsletter document..."):
                 # Create temporary directory if it doesn't exist
-                workdir = tempfile.mkdtemp()
+                workdir = st.session_state.get('newsletter_workdir') or tempfile.mkdtemp()
                 
-                # Create newsletter document
+                # Create newsletter document with images
                 newsletter_filename = "newsletter.docx"
-                doc_path = create_newsletter_doc(
+                newsletter_images = st.session_state.get('newsletter_images', [])
+                
+                doc_path = create_newsletter_doc_with_images(
                     st.session_state.exec_summary_newsletter, 
                     st.session_state.article_summaries_newsletter,
-                    os.path.join(workdir, newsletter_filename)
+                    os.path.join(workdir, newsletter_filename),
+                    newsletter_images
                 )
                 
                 # Generate download link
@@ -1084,3 +1361,12 @@ with tab2:
         st.info("Please clean some articles in the 'Article Cleaning' tab first, or choose to upload new articles.")
     elif not newsletter_articles_to_process and newsletter_source != "Use cleaned articles from Article Cleaning tab":
         st.info("Please upload files or paste text to generate a newsletter.")
+
+# Backward compatibility functions
+def create_word_doc(article_data, output_path):
+    """Create a Word document from cleaned article data using source-based template"""
+    return create_word_doc_with_images(article_data, output_path, None, False)
+
+def create_newsletter_doc(exec_summary, articles, output_path):
+    """Create a Word document with newsletter content"""
+    return create_newsletter_doc_with_images(exec_summary, articles, output_path, None)
